@@ -1,3 +1,10 @@
+---
+author: Kim Jeong-woong
+date: 2026-04-03
+description: MCP(Model Context Protocol) Server Implementation & Table Context Guide
+status: In Progress
+---
+
 # Table Context MCP Server
 
 ## 프로젝트 개요
@@ -9,6 +16,7 @@
 - `sampleFile/TableDefinition_Sample.xlsx` 형식의 엑셀 파일을 업로드하면 데이터를 추출하여 JSON 포맷으로 변환 및 저장합니다.
 - 생성되는 JSON 파일명은 엑셀 내 **테이블명** 필드의 값을 기준(예: `USER_INFO.json`)으로 생성합니다.
 - 테이블 명을 기반으로 생성된 JSON 파일명은 서로 겹치지 않게 테이블마다 **고유하게 생성 및 관리**되어야 합니다.
+- 중복된 테이블명이 있으면, 나중에 올리는 excel 기준으로 덮어씌워져야 합니다.
 
 ### 2. UI 및 화면 제공 (HTML/CSS/Vanilla JS)
 - **파일 업로드 기능**: 테이블 정의서를 쉽게 첨부할 수 있는 프리미엄 디자인의 업로드 화면을 제공합니다.
@@ -21,7 +29,7 @@
 - 백엔드에 연동된 LLM 클라이언트가 현재 저장된 데이터베이스 테이블 목록을 조회할 수 있는 Tool을 제공합니다. (예: `list_tables`)
 - LLM이 SQL 쿼리 등을 작성하기 위해 필요한 특정 테이블의 구조(컬럼명, 데이터 타입, 설명 등)를 요청하면, 해당 스키마 정보를 반환하는 Tool을 제공합니다. (예: `get_table_schema`)
 
-## 기술 스택 (예정)
+## 기술 스택
 - **백엔드/웹서버**: Python, FastAPI
 - **데이터 파싱/처리**: Pandas (또는 OpenPyXL)
 - **MCP 서버**: mcp SDK (Python stdio 또는 SSE 지원)
@@ -37,19 +45,19 @@ table-context-mcp/
 ├── parser.py                 # Excel ↔ JSON 양방향 변환을 담당하는 핵심 로직
 ├── templates/
 │   └── index.html            # Glassmorphism 등 프리미엄 디자인이 적용된 웹 UI 화면
-├── sampleFile/
-│   └── TableDefinition_Sample.xlsx   # 파서 개발의 기준이 되는 샘플 엑셀 양식
-└── data/                     # 파싱된 테이블별 JSON 파일들이 저장되는 디렉토리
+├── tableStore/               # 파싱된 테이블별 JSON 파일들이 저장되는 디렉토리
+└── sampleFile/
+    └── TableDefinition_Sample.xlsx   # 파서 개발의 기준이 되는 샘플 엑셀 양식
 ```
 
 ## 파일 역할 및 의존 관계
 
 - `parser.py`가 Excel ↔ JSON 변환의 **핵심 로직을 단독으로 담당**하며, `web_server.py`와 `mcp_server.py`는 이를 import하여 사용합니다.
-- `web_server.py`와 `mcp_server.py`는 서로 독립적으로 실행되며, `data/` 디렉토리를 공유합니다.
+- `web_server.py`와 `mcp_server.py`는 서로 독립적으로 실행되며, `tableStore/` 디렉토리를 공유합니다.
 
 ## 데이터 저장 규칙
 
-- JSON 파일은 `data/{테이블명}.json` 경로에 저장됩니다. (예: `data/USER_INFO.json`)
+- JSON 파일은 `tableStore/{테이블명}.json` 경로에 저장됩니다. (예: `tableStore/USER_INFO.json`)
 - 동일한 테이블명으로 재업로드 시 기존 파일을 **덮어씁니다(upsert)**.
 
 ## JSON 출력 스펙
@@ -64,11 +72,11 @@ table-context-mcp/
 | 컬럼명 | 물리 컬럼명 | `column_name` |
 | PK여부 | PK 여부 (`Y` / 공백) | `is_pk` |
 | Null여부 | Null 허용 여부 (`Y` / `N`) | `nullable` |
-| 논리데이터타입 | 논리 타입 (예: `VARCHAR2(8)`) | `logical_type` |
-| 물리데이터타입 | 물리 타입 (예: `VARCHAR2(8)`) | `physical_type` |
+| 논리데이터타입 | 논리 타입 (예: `DATE`) | `logical_type` (물리와 다를 경우에만 추가) |
+| 물리데이터타입 | 물리 타입 (예: `VARCHAR2(8)`) | `data_type` (항상 사용) |
 | default값 | 기본값 (없으면 `null`) | `default_value` |
 | 속성설명 | 컬럼 상세 설명 | `description` |
-| 대표컬럼순서번호 | 컬럼 순서 (정수) | `order` |
+| 대표컬럼순서번호 | 컬럼 순서 (정수) | (사용 안 함 — 배열 순서로 대체) |
 
 ### JSON 파일 구조 예시
 
@@ -111,7 +119,7 @@ table-context-mcp/
 }
 ```
 
-> `logical_type`과 `physical_type`이 **다를 경우에만** `logical_type` 필드를 추가합니다. 동일한 경우 `data_type` 하나만 사용합니다.
+> `논리데이터타입`과 `물리데이터타입`이 **다를 경우에만** `logical_type` 필드를 추가합니다. 동일한 경우 `data_type` 하나만 사용합니다.
 
 ### 파싱 규칙
 - `PK여부` 값이 `"Y"`이면 `is_pk: true`, 그 외(공백/null)는 `false`로 변환합니다.
@@ -125,12 +133,28 @@ table-context-mcp/
 
 ## 개발 순서
 
-1. `sampleFile/TableDefinition_Sample.xlsx`의 구조를 먼저 분석하여 파싱 기준을 확인합니다.
+1. ~~`sampleFile/TableDefinition_Sample.xlsx`의 구조를 분석하여 파싱 기준을 확인합니다.~~ ✅ 완료 (파싱 스펙 위 섹션에 문서화됨)
 2. `parser.py` 개발 (Excel → JSON, JSON → Excel 양방향 변환).
 3. `web_server.py` 및 `templates/index.html` 개발.
 4. `mcp_server.py` 개발 및 LLM 클라이언트 연결 테스트.
 
 ## 실행 커맨드
+
+### 가상환경 설정
+```bash
+# 가상환경 생성
+python -m venv venv
+
+# 가상환경 활성화
+# Windows
+venv\Scripts\activate
+
+# macOS / Linux
+source venv/bin/activate
+
+# 가상환경 비활성화
+deactivate
+```
 
 ### 의존성 설치
 ```bash
@@ -152,15 +176,46 @@ uvicorn web_server:app --host 0.0.0.0 --port 8000
 python mcp_server.py
 ```
 - `mcp_server.py`는 **stdio 방식**으로 실행됩니다.
-- Claude Desktop, Cursor 등 MCP 클라이언트에서 아래와 같이 설정합니다:
+- MCP 클라이언트(Claude Desktop, Vibe 등)에서 직접 프로세스를 띄우므로 별도 서버 실행 불필요합니다.
+
+---
+
+## MCP 클라이언트 연결 설정
+
+> `command`에는 반드시 **venv 내부의 python 경로**를 지정해야 의존성이 정상 로드됩니다.
+
+### Claude Desktop
+
+설정 파일 경로: `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
 {
   "mcpServers": {
     "table-context": {
-      "command": "python",
-      "args": ["C:/path/to/table-context-mcp/mcp_server.py"]
+      "command": "E:\\myWorkspace\\vibeWorkspace\\table-context-mcp\\venv\\Scripts\\python.exe",
+      "args": ["E:\\myWorkspace\\vibeWorkspace\\table-context-mcp\\mcp_server.py"]
     }
   }
 }
 ```
+
+### Vibe
+
+설정 파일 경로: `%APPDATA%\Vibe\mcp_config.json` (또는 Vibe 설정 UI의 MCP 탭)
+
+```json
+{
+  "mcpServers": {
+    "table-context": {
+      "command": "E:\\myWorkspace\\vibeWorkspace\\table-context-mcp\\venv\\Scripts\\python.exe",
+      "args": ["E:\\myWorkspace\\vibeWorkspace\\table-context-mcp\\mcp_server.py"]
+    }
+  }
+}
+```
+
+### 연결 확인
+
+클라이언트에서 아래 Tool이 노출되면 정상 연결된 것입니다:
+- `list_tables` — 저장된 테이블 목록 조회
+- `get_table_schema` — 특정 테이블의 컬럼/타입 스키마 조회
