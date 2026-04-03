@@ -5,6 +5,8 @@ import json
 import uuid
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse, FileResponse
+from pydantic import BaseModel
+from typing import List
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 from parser import parse_excel_to_json, generate_excel_from_json
@@ -29,6 +31,17 @@ def cleanup_file(path: str):
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
     return templates.TemplateResponse(request, "index.html")
+
+@app.get("/download/sample")
+async def download_sample():
+    sample_path = os.path.join(BASE_DIR, "sampleFile", "TableDefinition_Sample.xlsx")
+    if not os.path.exists(sample_path):
+        raise HTTPException(status_code=404, detail="Sample file not found")
+    return FileResponse(
+        sample_path,
+        filename="TableDefinition_Sample.xlsx",
+        media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
 
 @app.post("/upload")
 async def upload_excel(file: UploadFile = File(...)):
@@ -69,6 +82,40 @@ async def get_table(table_name: str):
         raise HTTPException(status_code=404, detail="Table not found")
     with open(json_path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+@app.delete("/api/tables/all")
+async def delete_all_tables():
+    if not os.path.exists(STORE_DIR):
+        return {"deleted": []}
+    files = glob.glob(os.path.join(STORE_DIR, "*.json"))
+    deleted = []
+    for f in files:
+        os.remove(f)
+        deleted.append(os.path.basename(f).replace('.json', ''))
+    return {"deleted": deleted}
+
+class BatchDeleteRequest(BaseModel):
+    tables: List[str]
+
+@app.delete("/api/tables/batch")
+async def delete_batch_tables(body: BatchDeleteRequest):
+    deleted = []
+    for table_name in body.tables:
+        table_name = _validate_table_name(table_name)
+        json_path = os.path.join(STORE_DIR, f"{table_name}.json")
+        if os.path.exists(json_path):
+            os.remove(json_path)
+            deleted.append(table_name)
+    return {"deleted": deleted}
+
+@app.delete("/api/tables/{table_name}")
+async def delete_table(table_name: str):
+    table_name = _validate_table_name(table_name)
+    json_path = os.path.join(STORE_DIR, f"{table_name}.json")
+    if not os.path.exists(json_path):
+        raise HTTPException(status_code=404, detail="Table not found")
+    os.remove(json_path)
+    return {"deleted": table_name}
 
 @app.get("/download/json/{table_name}")
 async def download_json(table_name: str):
