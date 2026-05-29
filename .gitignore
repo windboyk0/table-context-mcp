@@ -1,0 +1,22 @@
+# 가상환경
+venv/
+.venv/
+
+# Python 캐시
+__pycache__/
+*.pyc
+*.pyo
+
+# 임시 업로드 파일
+temp_*.xlsx
+
+# tableStore (파싱된 JSON 데이터 — 런타임 생성 파일)
+tableStore/*.json
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
