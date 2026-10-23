@@ -325,6 +325,63 @@
             color: #a78bfa;
         }
         
+        /* Toolbar (search / filter) */
+        .toolbar {
+            display: flex;
+            gap: 0.75rem;
+            margin-bottom: 1.25rem;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .toolbar input[type="search"], .toolbar select {
+            background: rgba(0, 0, 0, 0.25);
+            border: 1px solid var(--glass-border);
+            color: var(--text-primary);
+            border-radius: 0.5rem;
+            padding: 0.55rem 0.9rem;
+            font-family: inherit;
+            font-size: 0.9rem;
+        }
+        .toolbar input[type="search"] { flex: 1; min-width: 220px; }
+        .toolbar input[type="checkbox"] { accent-color: var(--accent); vertical-align: middle; }
+        .toolbar input:focus, .toolbar select:focus { outline: none; border-color: var(--accent); }
+        .toolbar select option { background: var(--bg-color); }
+        .count-label { color: var(--text-secondary); font-size: 0.85rem; white-space: nowrap; }
+
+        .table-card .entity {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            margin-top: -0.6rem;
+            padding-right: 1.5rem;
+        }
+        .table-card h3 { padding-right: 1.5rem; }
+
+        /* Schema table in modal */
+        .modal-content.wide { max-width: 1100px; }
+        .tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+        .tabs .btn.active { background: var(--accent); border-color: var(--accent); }
+        .schema-meta { color: var(--text-secondary); margin-bottom: 1rem; font-size: 0.9rem; }
+        .schema-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+        .schema-table th, .schema-table td {
+            border-bottom: 1px solid var(--glass-border);
+            padding: 0.5rem 0.6rem;
+            text-align: left;
+            vertical-align: top;
+        }
+        .schema-table th { color: var(--text-secondary); font-weight: 600; position: sticky; top: -1.5rem; background: var(--bg-color); }
+        .schema-table td.mono { font-family: 'Courier New', Courier, monospace; white-space: nowrap; }
+        .schema-table td.desc { white-space: pre-wrap; color: var(--text-secondary); min-width: 240px; }
+        .badge {
+            display: inline-block;
+            padding: 0.1rem 0.45rem;
+            border-radius: 0.3rem;
+            font-size: 0.75rem;
+            font-weight: 600;
+            background: rgba(245, 158, 11, 0.2);
+            color: #fbbf24;
+        }
+        .upload-detail { font-size: 0.85rem; color: var(--text-secondary); margin-top: 0.3rem; }
+
         /* Loading overlay */
         .loading {
             position: absolute;
@@ -404,9 +461,19 @@
                 <h2>Parsed Tables</h2>
                 <div class="bulk-actions">
                     <button class="btn outline small" onclick="loadTables()">Refresh</button>
+                    <button class="btn outline small" id="downloadSelectedBtn" onclick="downloadExcel(true)" style="display:none;">선택 Excel</button>
+                    <button class="btn outline small" onclick="downloadExcel(false)">전체 Excel</button>
                     <button class="btn danger outline small" id="deleteSelectedBtn" onclick="deleteSelected()" style="display:none;">선택 삭제</button>
                     <button class="btn danger outline small" onclick="deleteAll()">전체 삭제</button>
                 </div>
+            </div>
+            <div class="toolbar">
+                <input type="search" id="searchInput" placeholder="테이블명 / 엔티티명 검색" oninput="applyFilter()">
+                <select id="prefixFilter" onchange="applyFilter()">
+                    <option value="">전체 접두어</option>
+                </select>
+                <label class="count-label"><input type="checkbox" id="selectAllVisible" onchange="toggleSelectVisible(this.checked)"> 보이는 항목 전체 선택</label>
+                <span class="count-label" id="countLabel"></span>
             </div>
             <div class="table-list" id="tableList">
                 <!-- Cards will be injected here -->
@@ -419,13 +486,18 @@
 
     <!-- Modal -->
     <div class="modal" id="jsonModal" onclick="if(event.target===this) closeModal()">
-        <div class="modal-content">
+        <div class="modal-content wide">
             <div class="modal-header">
-                <h3 id="modalTitle">Table JSON Schema</h3>
+                <h3 id="modalTitle">Table Schema</h3>
                 <button class="close-btn" onclick="closeModal()">&times;</button>
             </div>
             <div class="modal-body">
-                <pre id="jsonPreview">Loading...</pre>
+                <div class="tabs">
+                    <button class="btn outline small active" id="tabTable" onclick="switchTab('table')">컬럼 표</button>
+                    <button class="btn outline small" id="tabJson" onclick="switchTab('json')">JSON</button>
+                </div>
+                <div id="schemaTableView"></div>
+                <pre id="jsonPreview" style="display:none;">Loading...</pre>
             </div>
         </div>
     </div>
@@ -472,8 +544,11 @@
             }
         }
 
+        let allTables = [];           // [{table_name, entity_name, column_count}]
+        const selected = new Set();   // 필터와 무관하게 선택 상태 유지
+
         async function uploadFile(file) {
-            if (!file.name.endsWith('.xlsx')) {
+            if (!file.name.toLowerCase().endsWith('.xlsx')) {
                 showStatus('Only .xlsx files are allowed.', 'danger');
                 return;
             }
@@ -489,13 +564,23 @@
                     method: 'POST',
                     body: formData
                 });
-                
+                const data = await response.json().catch(() => ({}));
+
                 if (response.ok) {
-                    showStatus('File successfully parsed and saved.', 'success');
+                    const details = [];
+                    if (data.created.length) details.push(`신규: ${data.created.join(', ')}`);
+                    if (data.updated.length) details.push(`덮어쓰기: ${data.updated.join(', ')}`);
+                    if (data.skipped.length) details.push(`제외: ${data.skipped.map(s => `${s.table_name} (${s.reason})`).join(', ')}`);
+                    showStatus(
+                        `저장 완료 — 신규 ${data.created.length}개, 덮어쓰기 ${data.updated.length}개` +
+                        (data.skipped.length ? `, 제외 ${data.skipped.length}개` : ''),
+                        data.skipped.length ? 'danger' : 'success',
+                        details,
+                        15000
+                    );
                     loadTables();
                 } else {
-                    const err = await response.json();
-                    showStatus(`Error: ${err.detail}`, 'danger');
+                    showStatus(`Error: ${data.detail || response.statusText}`, 'danger');
                 }
             } catch (error) {
                 showStatus(`Network Error: ${error.message}`, 'danger');
@@ -504,24 +589,76 @@
             }
         }
 
-        function showStatus(text, type) {
+        let statusTimer = null;
+        function showStatus(text, type, details = [], duration = 5000) {
             const statusEl = document.getElementById('uploadStatus');
-            statusEl.textContent = text;
+            statusEl.replaceChildren();
+            const main = document.createElement('div');
+            main.textContent = text;
+            statusEl.appendChild(main);
+            details.forEach(d => {
+                const el = document.createElement('div');
+                el.className = 'upload-detail';
+                el.textContent = d;
+                statusEl.appendChild(el);
+            });
             statusEl.style.color = `var(--${type})`;
             statusEl.style.opacity = 1;
-            setTimeout(() => {
-                statusEl.style.opacity = 0;
-            }, 5000);
+            clearTimeout(statusTimer);
+            statusTimer = setTimeout(() => { statusEl.style.opacity = 0; }, duration);
         }
 
         async function loadTables() {
             try {
                 const res = await fetch('/api/tables');
-                const tables = await res.json();
-                renderTableList(tables);
+                if (!res.ok) throw new Error(res.statusText);
+                allTables = await res.json();
+                const names = new Set(allTables.map(t => t.table_name));
+                [...selected].forEach(n => { if (!names.has(n)) selected.delete(n); });
+                renderPrefixOptions();
+                applyFilter();
             } catch (err) {
                 console.error("Failed to load tables", err);
+                showStatus('테이블 목록을 불러오지 못했습니다.', 'danger');
             }
+        }
+
+        function tablePrefix(name) {
+            const idx = name.indexOf('_');
+            return idx > 0 ? name.slice(0, idx) : name;
+        }
+
+        function renderPrefixOptions() {
+            const select = document.getElementById('prefixFilter');
+            const current = select.value;
+            const counts = {};
+            allTables.forEach(t => {
+                const p = tablePrefix(t.table_name);
+                counts[p] = (counts[p] || 0) + 1;
+            });
+            select.replaceChildren(new Option('전체 접두어', ''));
+            Object.keys(counts).sort().forEach(p => select.appendChild(new Option(`${p} (${counts[p]})`, p)));
+            select.value = counts[current] ? current : '';
+        }
+
+        function visibleTables() {
+            const q = document.getElementById('searchInput').value.trim().toLowerCase();
+            const prefix = document.getElementById('prefixFilter').value;
+            return allTables.filter(t =>
+                (!prefix || tablePrefix(t.table_name) === prefix) &&
+                (!q || t.table_name.toLowerCase().includes(q) || (t.entity_name || '').toLowerCase().includes(q))
+            );
+        }
+
+        function applyFilter() {
+            const tables = visibleTables();
+            document.getElementById('countLabel').textContent = `${tables.length} / ${allTables.length}개`;
+            renderTableList(tables);
+        }
+
+        function toggleSelectVisible(checked) {
+            visibleTables().forEach(t => checked ? selected.add(t.table_name) : selected.delete(t.table_name));
+            applyFilter();
         }
 
         function renderTableList(tables) {
@@ -529,31 +666,41 @@
             const emptyState = document.getElementById('emptyState');
 
             listEl.innerHTML = '';
-            updateDeleteSelectedBtn();
+            updateSelectionButtons();
 
             if (!tables || tables.length === 0) {
+                emptyState.textContent = allTables.length
+                    ? '검색 조건에 맞는 테이블이 없습니다.'
+                    : 'No tables parsed yet. Upload an excel file above.';
                 emptyState.style.display = 'block';
                 return;
             }
 
             emptyState.style.display = 'none';
 
-            tables.forEach(table => {
+            tables.forEach(({ table_name: table, entity_name, column_count }) => {
                 const card = document.createElement('div');
                 card.className = 'table-card';
                 card.dataset.table = table;
+                card.classList.toggle('selected', selected.has(table));
 
                 // 체크박스
                 const checkbox = document.createElement('input');
                 checkbox.type = 'checkbox';
                 checkbox.className = 'card-checkbox';
+                checkbox.checked = selected.has(table);
                 checkbox.addEventListener('change', () => {
+                    checkbox.checked ? selected.add(table) : selected.delete(table);
                     card.classList.toggle('selected', checkbox.checked);
-                    updateDeleteSelectedBtn();
+                    updateSelectionButtons();
                 });
 
                 const h3 = document.createElement('h3');
                 h3.textContent = table;
+
+                const entity = document.createElement('div');
+                entity.className = 'entity';
+                entity.textContent = `${entity_name || '-'} · ${column_count} columns`;
 
                 const actions = document.createElement('div');
                 actions.className = 'table-actions';
@@ -561,7 +708,7 @@
                 const viewBtn = document.createElement('button');
                 viewBtn.className = 'btn small';
                 viewBtn.textContent = 'View Schema';
-                viewBtn.addEventListener('click', () => viewJson(table));
+                viewBtn.addEventListener('click', () => viewSchema(table));
 
                 const jsonLink = document.createElement('a');
                 jsonLink.href = `/download/json/${encodeURIComponent(table)}`;
@@ -586,22 +733,50 @@
                 actions.appendChild(deleteBtn);
                 card.appendChild(checkbox);
                 card.appendChild(h3);
+                card.appendChild(entity);
                 card.appendChild(actions);
                 listEl.appendChild(card);
             });
         }
 
-        function updateDeleteSelectedBtn() {
-            const checked = document.querySelectorAll('.card-checkbox:checked').length;
-            const btn = document.getElementById('deleteSelectedBtn');
-            btn.style.display = checked > 0 ? 'inline-flex' : 'none';
-            btn.textContent = `선택 삭제 (${checked})`;
+        function updateSelectionButtons() {
+            const n = selected.size;
+            const delBtn = document.getElementById('deleteSelectedBtn');
+            const dlBtn = document.getElementById('downloadSelectedBtn');
+            delBtn.style.display = dlBtn.style.display = n > 0 ? 'inline-flex' : 'none';
+            delBtn.textContent = `선택 삭제 (${n})`;
+            dlBtn.textContent = `선택 Excel (${n})`;
+        }
+
+        async function downloadExcel(onlySelected) {
+            const tables = onlySelected ? [...selected] : [];
+            if (!allTables.length) return;
+            try {
+                const res = await fetch('/download/excel', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tables })
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || res.statusText);
+                }
+                const blob = await res.blob();
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = onlySelected ? 'TableDefinition_selected.xlsx' : 'TableDefinition_all.xlsx';
+                a.click();
+                URL.revokeObjectURL(a.href);
+            } catch (err) {
+                showStatus(`Excel 다운로드 실패: ${err.message}`, 'danger');
+            }
         }
 
         async function deleteOne(table) {
             if (!confirm(`"${table}" 을(를) 삭제할까요?`)) return;
             const res = await fetch(`/api/tables/${encodeURIComponent(table)}`, { method: 'DELETE' });
             if (res.ok) {
+                selected.delete(table);
                 showStatus(`"${table}" 삭제 완료.`, 'success');
                 loadTables();
             } else {
@@ -610,8 +785,7 @@
         }
 
         async function deleteSelected() {
-            const cards = document.querySelectorAll('.table-card.selected');
-            const tables = Array.from(cards).map(c => c.dataset.table);
+            const tables = [...selected];
             if (tables.length === 0) return;
             if (!confirm(`선택된 ${tables.length}개 테이블을 삭제할까요?`)) return;
             const res = await fetch('/api/tables/batch', {
@@ -620,7 +794,9 @@
                 body: JSON.stringify({ tables })
             });
             if (res.ok) {
-                showStatus(`${tables.length}개 삭제 완료.`, 'success');
+                const data = await res.json();
+                selected.clear();
+                showStatus(`${data.deleted.length}개 삭제 완료.`, 'success');
                 loadTables();
             } else {
                 showStatus('삭제 실패.', 'danger');
@@ -628,11 +804,11 @@
         }
 
         async function deleteAll() {
-            const cards = document.querySelectorAll('.table-card');
-            if (cards.length === 0) return;
-            if (!confirm('전체 테이블을 모두 삭제할까요?')) return;
+            if (allTables.length === 0) return;
+            if (!confirm(`전체 ${allTables.length}개 테이블을 모두 삭제할까요?`)) return;
             const res = await fetch('/api/tables/all', { method: 'DELETE' });
             if (res.ok) {
+                selected.clear();
                 showStatus('전체 삭제 완료.', 'success');
                 loadTables();
             } else {
@@ -640,21 +816,78 @@
             }
         }
 
-        async function viewJson(tableName) {
+        function switchTab(tab) {
+            document.getElementById('tabTable').classList.toggle('active', tab === 'table');
+            document.getElementById('tabJson').classList.toggle('active', tab === 'json');
+            document.getElementById('schemaTableView').style.display = tab === 'table' ? 'block' : 'none';
+            document.getElementById('jsonPreview').style.display = tab === 'json' ? 'block' : 'none';
+        }
+
+        function renderSchemaTable(schema) {
+            const view = document.getElementById('schemaTableView');
+            view.replaceChildren();
+
+            const meta = document.createElement('div');
+            meta.className = 'schema-meta';
+            meta.textContent = `${schema.entity_name || '-'} · PK: ${(schema.pk_columns || []).join(', ') || '없음'} · ${schema.columns.length} columns`;
+            view.appendChild(meta);
+
+            const table = document.createElement('table');
+            table.className = 'schema-table';
+            const headRow = table.createTHead().insertRow();
+            ['#', '컬럼명', '속성명', '타입', 'PK', 'Null', 'Default', '설명'].forEach(h => {
+                const th = document.createElement('th');
+                th.textContent = h;
+                headRow.appendChild(th);
+            });
+
+            const body = table.createTBody();
+            schema.columns.forEach((col, i) => {
+                const row = body.insertRow();
+                const cell = (text, cls) => {
+                    const td = row.insertCell();
+                    if (cls) td.className = cls;
+                    td.textContent = text ?? '';
+                    return td;
+                };
+                cell(i + 1);
+                cell(col.column_name, 'mono');
+                cell(col.attribute_name);
+                cell(col.logical_type ? `${col.data_type} (${col.logical_type})` : col.data_type, 'mono');
+                const pk = cell('');
+                if (col.is_pk) {
+                    const badge = document.createElement('span');
+                    badge.className = 'badge';
+                    badge.textContent = 'PK';
+                    pk.appendChild(badge);
+                }
+                cell(col.nullable ? 'Y' : 'N');
+                cell(col.default_value, 'mono');
+                cell(col.description, 'desc');
+            });
+            view.appendChild(table);
+        }
+
+        async function viewSchema(tableName) {
             const modal = document.getElementById('jsonModal');
             const preview = document.getElementById('jsonPreview');
+            const view = document.getElementById('schemaTableView');
             const title = document.getElementById('modalTitle');
-            
-            title.textContent = `${tableName}.json`;
+
+            title.textContent = tableName;
             preview.textContent = 'Loading...';
+            view.textContent = 'Loading...';
+            switchTab('table');
             modal.classList.add('active');
-            
+
             try {
                 const res = await fetch(`/api/tables/${encodeURIComponent(tableName)}`);
                 const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || res.statusText);
                 preview.textContent = JSON.stringify(data, null, 2);
+                renderSchemaTable(data);
             } catch (err) {
-                preview.textContent = 'Error loading json';
+                preview.textContent = view.textContent = `Error loading schema: ${err.message}`;
             }
         }
 
@@ -662,6 +895,8 @@
             const modal = document.getElementById('jsonModal');
             modal.classList.remove('active');
         }
+
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
     </script>
 </body>
 </html>

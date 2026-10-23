@@ -26,8 +26,8 @@ status: In Progress
   - 조회한 테이블 정보를 역으로 **Excel 파일** 양식에 맞춰 변환하여 다운로드할 수 있어야 합니다.
 
 ### 3. MCP (Model Context Protocol) 연동 기능
-- 백엔드에 연동된 LLM 클라이언트가 현재 저장된 데이터베이스 테이블 목록을 조회할 수 있는 Tool을 제공합니다. (예: `list_tables`)
-- LLM이 SQL 쿼리 등을 작성하기 위해 필요한 특정 테이블의 구조(컬럼명, 데이터 타입, 설명 등)를 요청하면, 해당 스키마 정보를 반환하는 Tool을 제공합니다. (예: `get_table_schema`)
+- 백엔드에 연동된 LLM 클라이언트가 현재 저장된 데이터베이스 테이블 목록을 조회할 수 있는 Tool을 제공합니다. (`list_tables`, `search_tables`, `find_columns`)
+- LLM이 SQL 쿼리 등을 작성하기 위해 필요한 특정 테이블의 구조(컬럼명, 데이터 타입, 설명 등)를 요청하면, 해당 스키마 정보를 반환하는 Tool을 제공합니다. (`get_table_schema`, `get_table_schemas`, `get_table_ddl`)
 
 ## 기술 스택
 - **백엔드/웹서버**: Python, FastAPI
@@ -43,6 +43,8 @@ table-context-mcp/
 ├── web_server.py             # 화면 제공, 파일 업로드/다운로드 처리를 위한 FastAPI 서버
 ├── mcp_server.py             # LLM이 연동될 MCP 서버 (stdio 방식)
 ├── parser.py                 # Excel ↔ JSON 양방향 변환을 담당하는 핵심 로직
+├── store.py                  # tableStore/ 접근 공용 모듈 (테이블명 검증, 목록/조회/원자적 저장/삭제)
+├── tests/                    # pytest (파서 왕복 변환, 웹 API, MCP Tool)
 ├── templates/
 │   └── index.html            # Glassmorphism 등 프리미엄 디자인이 적용된 웹 UI 화면
 ├── tableStore/               # 파싱된 테이블별 JSON 파일들이 저장되는 디렉토리
@@ -52,7 +54,9 @@ table-context-mcp/
 
 ## 파일 역할 및 의존 관계
 
-- `parser.py`가 Excel ↔ JSON 변환의 **핵심 로직을 단독으로 담당**하며, `web_server.py`와 `mcp_server.py`는 이를 import하여 사용합니다.
+- `parser.py`가 Excel ↔ JSON 변환의 **핵심 로직을 단독으로 담당**합니다. (`web_server.py`가 import)
+- `store.py`가 `tableStore/` 파일 접근과 **테이블명 검증을 단독으로 담당**하며, `parser.py`/`web_server.py`/`mcp_server.py` 모두 이를 경유합니다. `tableStore/` 경로를 직접 조합하지 마세요(경로 탈출 방지).
+- `store.py`는 표준 라이브러리만 사용 — `mcp_server.py`는 pandas를 import하지 않습니다.
 - `web_server.py`와 `mcp_server.py`는 서로 독립적으로 실행되며, `tableStore/` 디렉토리를 공유합니다.
 
 ## 데이터 저장 규칙
@@ -130,13 +134,18 @@ table-context-mcp/
 - 컬럼 배열의 순서가 곧 컬럼 순서이므로 별도 `order` 필드는 사용하지 않습니다.
 - 모든 컬럼이 null인 행은 빈 행으로 간주하여 파싱에서 제외합니다.
 - 하나의 엑셀 파일에 여러 테이블이 존재할 경우 `테이블명` 기준으로 그룹핑하여 **테이블별로 별도의 JSON 파일**을 생성합니다.
+- **모든 시트**를 읽으며, 각 시트 상단 30행 안에서 필수 컬럼(`테이블명`, `컬럼명`, `물리데이터타입`)이 있는 행을 헤더로 자동 탐지합니다. 헤더가 없는 시트(표지 등)는 건너뜁니다.
+- 셀 값은 문자열로 읽습니다 (default값 `0` → `"0"`, `0.0`으로 바뀌지 않음).
+- 테이블명은 `^[\w$#][\w$#.\-]*$` (영문/숫자/한글/_ . $ # -, `..` 불가)만 허용하며, 위반 테이블은 저장하지 않고 업로드 결과의 `skipped`로 반환합니다.
+- 같은 테이블 내 중복 컬럼명은 첫 행만 사용합니다.
+- `Null여부`가 공백이면 `nullable: false`로 처리합니다.
 
 ## 개발 순서
 
 1. ~~`sampleFile/TableDefinition_Sample.xlsx`의 구조를 분석하여 파싱 기준을 확인합니다.~~ ✅ 완료 (파싱 스펙 위 섹션에 문서화됨)
-2. `parser.py` 개발 (Excel → JSON, JSON → Excel 양방향 변환).
-3. `web_server.py` 및 `templates/index.html` 개발.
-4. `mcp_server.py` 개발 및 LLM 클라이언트 연결 테스트.
+2. ~~`parser.py` 개발 (Excel → JSON, JSON → Excel 양방향 변환).~~ ✅ 완료
+3. ~~`web_server.py` 및 `templates/index.html` 개발.~~ ✅ 완료
+4. ~~`mcp_server.py` 개발 및 LLM 클라이언트 연결 테스트.~~ ✅ 완료
 
 ## 실행 커맨드
 
@@ -164,12 +173,19 @@ pip install -r requirements.txt
 ### 웹 서버 실행
 ```bash
 # 개발 모드 (파일 변경 시 자동 재시작)
-uvicorn web_server:app --host 0.0.0.0 --port 8090 --reload
+uvicorn web_server:app --host 127.0.0.1 --port 8090 --reload
 
 # 운영 모드
-uvicorn web_server:app --host 0.0.0.0 --port 8090
+uvicorn web_server:app --host 127.0.0.1 --port 8090
 ```
 - 웹 UI 접근 URL: `http://localhost:8090`
+- 기본은 `127.0.0.1`(로컬 전용). 인증이 없으므로(전체 삭제 API 포함) 외부 공개가 필요할 때만 `--host 0.0.0.0` 사용
+
+### 테스트
+```bash
+pytest tests/ -v
+```
+- 테스트는 임시 디렉토리를 `STORE_DIR`로 사용하므로 실제 `tableStore/`를 건드리지 않습니다.
 
 ### MCP 서버 실행 (직접 실행 시)
 ```bash
@@ -192,8 +208,8 @@ python mcp_server.py
 {
   "mcpServers": {
     "table-context": {
-      "command": "D:\\VS-Workspace\\gemini-workspace\\table-context-mcp\\venv\\Scripts\\python.exe",
-      "args": ["D:\\VS-Workspace\\gemini-workspace\\table-context-mcp\\mcp_server.py"]
+      "command": "D:\\VS-Workspace\\claude-workspace\\table-context-mcp\\venv\\Scripts\\python.exe",
+      "args": ["D:\\VS-Workspace\\claude-workspace\\table-context-mcp\\mcp_server.py"]
     }
   }
 }
@@ -207,8 +223,8 @@ python mcp_server.py
 {
   "mcpServers": {
     "table-context": {
-      "command": "D:\\VS-Workspace\\gemini-workspace\\table-context-mcp\\venv\\Scripts\\python.exe",
-      "args": ["D:\\VS-Workspace\\gemini-workspace\\table-context-mcp\\mcp_server.py"]
+      "command": "D:\\VS-Workspace\\claude-workspace\\table-context-mcp\\venv\\Scripts\\python.exe",
+      "args": ["D:\\VS-Workspace\\claude-workspace\\table-context-mcp\\mcp_server.py"]
     }
   }
 }
@@ -217,5 +233,9 @@ python mcp_server.py
 ### 연결 확인
 
 클라이언트에서 아래 Tool이 노출되면 정상 연결된 것입니다:
-- `list_tables` — 저장된 테이블 목록 조회
-- `get_table_schema` — 특정 테이블의 컬럼/타입 스키마 조회
+- `list_tables` — 저장된 테이블 목록 조회 (테이블명 + 엔티티명 + 컬럼 수, 접두어 필터)
+- `search_tables` — 키워드로 테이블 검색 (테이블명/엔티티명/컬럼명/속성명/설명 대상, 공백 구분 AND)
+- `find_columns` — 특정 컬럼을 가진 테이블 검색 (조인 키 탐색용)
+- `get_table_schema` — 특정 테이블의 컬럼/타입 스키마 조회 (대소문자 무시, 없으면 유사 테이블 제안)
+- `get_table_schemas` — 여러 테이블 스키마 일괄 조회
+- `get_table_ddl` — `CREATE TABLE` DDL 형식으로 조회 (JSON보다 토큰 절약)

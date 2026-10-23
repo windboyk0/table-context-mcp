@@ -2,7 +2,7 @@
 author: Kim Jeong-woong
 date: 2026-04-03
 description: MCP(Model Context Protocol) Server Implementation & Table Context Guide
-status: In Progress
+status: Done
 ---
 
 # Table Context MCP Server 구현 계획
@@ -39,7 +39,7 @@ table-context-mcp/
 ## 주요 기능 구현 Flow
 
 ### 1. 웹 파트 (UI & FastAPI)
-- 브라우저를 통해 `http://localhost:8000` 접근
+- 브라우저를 통해 `http://localhost:8090` 접근
 - 드래그 앤 드롭 및 클릭으로 `TableDefinition_Sample.xlsx` 형식 파일 폼 전송
 - 서버는 pandas로 이를 파싱하여 테이블명(`테이블명` 필드 기준)을 추출하고 `tableStore/{테이블명}.json` 파일로 각각 고유하게 저장
 - 저장 완료 후, 현재 시스템에 보관된 테이블 목록(JSON 리스트)을 화면에 표시
@@ -54,6 +54,6 @@ table-context-mcp/
 
 - [x] 샘플 엑셀 파일 준비 (`sampleFile/TableDefinition_Sample.xlsx` 존재)
 - [x] 엑셀 컬럼 구조 분석 및 파싱 스펙 확정 (CLAUDE.md에 문서화)
-- [ ] `parser.py` 개발 (Excel → JSON, JSON → Excel 양방향 변환)
-- [ ] `web_server.py` 및 `templates/index.html` 개발
-- [ ] `mcp_server.py` 개발 및 LLM 클라이언트 연결 테스트
+- [x] `parser.py` 개발 (Excel → JSON, JSON → Excel 양방향 변환)
+- [x] `web_server.py` 및 `templates/index.html` 개발
+- [x] `mcp_server.py` 개발 및 LLM 클라이언트 연결 테스트

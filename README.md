@@ -10,7 +10,7 @@
 
 - **Excel ↔ JSON 양방향 변환**: 엑셀 정의서 업로드 시 테이블별 고유 JSON 파일 생성, 역방향 엑셀 내보내기도 지원
 - **프리미엄 웹 UI**: Glassmorphism 디자인 대시보드에서 테이블 목록 조회 및 상세 스키마 확인
-- **MCP 기반 LLM 연동**: `list_tables`, `get_table_schema` 도구를 통해 Claude/Vibe 등이 실시간으로 DB 메타데이터 참조
+- **MCP 기반 LLM 연동**: 테이블 검색·스키마/DDL 조회 도구 6종을 통해 Claude/Vibe 등이 실시간으로 DB 메타데이터 참조
 - **데이터 동기화**: `tableStore/` 디렉토리를 중심으로 웹 서버와 MCP 서버가 데이터 공유
 
 ## 기술 스택
@@ -26,6 +26,8 @@ table-context-mcp/
 ├── web_server.py      # FastAPI 기반 웹 대시보드 및 API
 ├── mcp_server.py      # LLM 연동을 위한 MCP 서버 (stdio 방식)
 ├── parser.py          # Excel ↔ JSON 변환 핵심 로직 (Core)
+├── store.py           # tableStore 접근 공용 모듈 (테이블명 검증, 원자적 저장)
+├── tests/             # pytest
 ├── tableStore/        # 변환된 JSON 데이터 저장소
 ├── templates/         # 웹 UI (index.html)
 └── sampleFile/        # 기준 엑셀 양식 샘플 (TableDefinition_Sample.xlsx)
@@ -55,11 +57,13 @@ pip install -r requirements.txt
 
 ```bash
 # 개발 모드 (파일 변경 시 자동 재시작)
-uvicorn web_server:app --host 0.0.0.0 --port 8090 --reload
+uvicorn web_server:app --host 127.0.0.1 --port 8090 --reload
 
 # 운영 모드
-uvicorn web_server:app --host 0.0.0.0 --port 8090
+uvicorn web_server:app --host 127.0.0.1 --port 8090
 ```
+
+> 웹 서버에는 인증이 없습니다(전체 삭제 API 포함). 외부 공개가 꼭 필요할 때만 `--host 0.0.0.0`을 사용하세요.
 
 브라우저에서 `http://localhost:8090` 접속 후 테이블 정의서를 업로드하세요.
 
@@ -93,8 +97,12 @@ python mcp_server.py
 > `command`에는 반드시 **venv 내부의 python 경로**를 지정해야 의존성이 정상 로드됩니다.
 
 연결 확인 시 아래 Tool이 노출되면 정상입니다:
-- `list_tables` — 저장된 테이블 목록 조회
-- `get_table_schema` — 특정 테이블의 컬럼/타입 스키마 조회
+- `list_tables` — 저장된 테이블 목록 조회 (테이블명 + 엔티티명 + 컬럼 수, 접두어 필터)
+- `search_tables` — 키워드로 테이블 검색 (테이블명/엔티티명/컬럼명/속성명/설명 대상, 공백 구분 AND)
+- `find_columns` — 특정 컬럼을 가진 테이블 검색 (조인 키 탐색용)
+- `get_table_schema` — 특정 테이블의 컬럼/타입 스키마 조회 (대소문자 무시, 없으면 유사 테이블 제안)
+- `get_table_schemas` — 여러 테이블 스키마 일괄 조회
+- `get_table_ddl` — `CREATE TABLE` DDL 형식으로 조회 (JSON보다 토큰 절약)
 
 ---
 

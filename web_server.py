@@ -1,142 +1,161 @@
 import os
-import re
-import glob
-import json
-import uuid
+import tempfile
+from typing import List
+
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse, FileResponse
-from pydantic import BaseModel
-from typing import List
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 from starlette.requests import Request
-from parser import parse_excel_to_json, generate_excel_from_json
+
+import store
+from parser import parse_excel_to_json, generate_excel
 
 app = FastAPI()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
-STORE_DIR = os.path.join(BASE_DIR, "tableStore")
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
 
 def _validate_table_name(table_name: str) -> str:
     """table_name이 안전한 식별자인지 검증. 위반 시 400 반환."""
-    if not re.match(r'^[\w\-]+$', table_name):
+    if not store.is_valid_table_name(table_name):
         raise HTTPException(status_code=400, detail="Invalid table name")
     return table_name
+
+
+def _require_table(table_name: str) -> str:
+    _validate_table_name(table_name)
+    if not store.table_exists(table_name):
+        raise HTTPException(status_code=404, detail="Table not found")
+    return table_name
+
+
+def _new_temp_path(suffix: str) -> str:
+    fd, path = tempfile.mkstemp(prefix="table_context_", suffix=suffix)
+    os.close(fd)
+    return path
+
 
 def cleanup_file(path: str):
     if os.path.exists(path):
         os.remove(path)
 
+
+def _excel_response(schemas: List[dict], filename: str, background_tasks: BackgroundTasks) -> FileResponse:
+    output_excel = _new_temp_path(".xlsx")
+    generate_excel(schemas, output_excel)
+    background_tasks.add_task(cleanup_file, output_excel)
+    return FileResponse(output_excel, filename=filename, media_type=XLSX_MEDIA_TYPE)
+
+
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
     return templates.TemplateResponse(request, "index.html")
+
 
 @app.get("/download/sample")
 async def download_sample():
     sample_path = os.path.join(BASE_DIR, "sampleFile", "TableDefinition_Sample.xlsx")
     if not os.path.exists(sample_path):
         raise HTTPException(status_code=404, detail="Sample file not found")
-    return FileResponse(
-        sample_path,
-        filename="TableDefinition_Sample.xlsx",
-        media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    )
+    return FileResponse(sample_path, filename="TableDefinition_Sample.xlsx", media_type=XLSX_MEDIA_TYPE)
+
 
 @app.post("/upload")
 async def upload_excel(file: UploadFile = File(...)):
-    if not file.filename.endswith('.xlsx'):
+    if not file.filename or not file.filename.lower().endswith(".xlsx"):
         raise HTTPException(status_code=400, detail="Only .xlsx files are allowed")
-    
-    # Save temporarily
-    temp_path = f"temp_{uuid.uuid4().hex}.xlsx"
-    with open(temp_path, "wb") as f:
-        content = await file.read()
-        f.write(content)
-        
+
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"파일 크기가 {MAX_UPLOAD_BYTES // (1024 * 1024)}MB를 초과합니다")
+
+    temp_path = _new_temp_path(".xlsx")
     try:
-        saved_tables = parse_excel_to_json(temp_path)
+        with open(temp_path, "wb") as f:
+            f.write(content)
+        result = parse_excel_to_json(temp_path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-        raise HTTPException(status_code=500, detail=f"Parsing error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Parsing error: {e}")
+    finally:
+        cleanup_file(temp_path)
 
-    if os.path.exists(temp_path):
-        os.remove(temp_path)
+    return {
+        "message": "Success",
+        "tables": result["created"] + result["updated"],
+        **result,
+    }
 
-    return {"message": "Success", "tables": saved_tables}
 
 @app.get("/api/tables")
 async def get_tables():
-    if not os.path.exists(STORE_DIR):
-        return []
-    files = glob.glob(os.path.join(STORE_DIR, "*.json"))
-    tables = [os.path.basename(f).replace('.json', '') for f in files]
-    return tables
+    """테이블 요약 목록 (이름순)"""
+    return [
+        {
+            "table_name": t.get("table_name", ""),
+            "entity_name": t.get("entity_name", ""),
+            "column_count": len(t.get("columns", [])),
+        }
+        for t in store.load_all_tables()
+    ]
+
 
 @app.get("/api/tables/{table_name}")
 async def get_table(table_name: str):
-    table_name = _validate_table_name(table_name)
-    json_path = os.path.join(STORE_DIR, f"{table_name}.json")
-    if not os.path.exists(json_path):
-        raise HTTPException(status_code=404, detail="Table not found")
-    with open(json_path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    return store.load_table(_require_table(table_name))
+
 
 @app.delete("/api/tables/all")
 async def delete_all_tables():
-    if not os.path.exists(STORE_DIR):
-        return {"deleted": []}
-    files = glob.glob(os.path.join(STORE_DIR, "*.json"))
-    deleted = []
-    for f in files:
-        os.remove(f)
-        deleted.append(os.path.basename(f).replace('.json', ''))
+    deleted = [name for name in store.list_table_names() if store.delete_table(name)]
     return {"deleted": deleted}
 
-class BatchDeleteRequest(BaseModel):
-    tables: List[str]
+
+class TableListRequest(BaseModel):
+    tables: List[str] = []
+
 
 @app.delete("/api/tables/batch")
-async def delete_batch_tables(body: BatchDeleteRequest):
-    deleted = []
+async def delete_batch_tables(body: TableListRequest):
     for table_name in body.tables:
-        table_name = _validate_table_name(table_name)
-        json_path = os.path.join(STORE_DIR, f"{table_name}.json")
-        if os.path.exists(json_path):
-            os.remove(json_path)
-            deleted.append(table_name)
+        _validate_table_name(table_name)
+    deleted = [name for name in body.tables if store.delete_table(name)]
     return {"deleted": deleted}
+
 
 @app.delete("/api/tables/{table_name}")
 async def delete_table(table_name: str):
-    table_name = _validate_table_name(table_name)
-    json_path = os.path.join(STORE_DIR, f"{table_name}.json")
-    if not os.path.exists(json_path):
-        raise HTTPException(status_code=404, detail="Table not found")
-    os.remove(json_path)
+    store.delete_table(_require_table(table_name))
     return {"deleted": table_name}
+
 
 @app.get("/download/json/{table_name}")
 async def download_json(table_name: str):
-    table_name = _validate_table_name(table_name)
-    json_path = os.path.join(STORE_DIR, f"{table_name}.json")
-    if not os.path.exists(json_path):
-        raise HTTPException(status_code=404, detail="Table not found")
-    return FileResponse(json_path, filename=f"{table_name}.json", media_type='application/json')
+    _require_table(table_name)
+    return FileResponse(store.table_path(table_name), filename=f"{table_name}.json", media_type="application/json")
+
 
 @app.get("/download/excel/{table_name}")
 async def download_excel(table_name: str, background_tasks: BackgroundTasks):
-    table_name = _validate_table_name(table_name)
-    json_path = os.path.join(STORE_DIR, f"{table_name}.json")
-    if not os.path.exists(json_path):
-        raise HTTPException(status_code=404, detail="Table not found")
-        
-    output_excel = f"temp_{uuid.uuid4().hex}.xlsx"
-    generate_excel_from_json([json_path], output_excel)
-    background_tasks.add_task(cleanup_file, output_excel)
-    return FileResponse(
-        output_excel, 
-        filename=f"{table_name}.xlsx", 
-        media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    )
+    schema = store.load_table(_require_table(table_name))
+    return _excel_response([schema], f"{table_name}.xlsx", background_tasks)
+
+
+@app.post("/download/excel")
+async def download_excel_bulk(body: TableListRequest, background_tasks: BackgroundTasks):
+    """선택한 테이블(빈 목록이면 전체)을 하나의 Excel로 다운로드"""
+    if body.tables:
+        schemas = [store.load_table(_require_table(name)) for name in body.tables]
+        filename = "TableDefinition_selected.xlsx"
+    else:
+        schemas = store.load_all_tables()
+        filename = "TableDefinition_all.xlsx"
+    if not schemas:
+        raise HTTPException(status_code=404, detail="다운로드할 테이블이 없습니다")
+    return _excel_response(schemas, filename, background_tasks)
