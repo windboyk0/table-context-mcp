@@ -173,12 +173,13 @@ pip install -r requirements.txt
 ### 웹 서버 실행
 ```bash
 # 개발 모드 (파일 변경 시 자동 재시작)
-uvicorn web_server:app --host 127.0.0.1 --port 8090 --reload
+uvicorn web_server:app --host 127.0.0.1 --port 8500 --reload
 
 # 운영 모드
-uvicorn web_server:app --host 127.0.0.1 --port 8090
+uvicorn web_server:app --host 127.0.0.1 --port 8500
 ```
-- 웹 UI 접근 URL: `http://localhost:8090`
+- 웹 UI 접근 URL: `http://localhost:8500`
+- 8090은 이 PC에서 Windows 예약 포트 대역(8056–8155, Hyper-V/WSL)에 걸려 바인딩 불가(WinError 10013) → 8500 사용. 포트 변경 시 `netsh interface ipv4 show excludedportrange protocol=tcp` 로 예약 대역을 먼저 확인
 - 기본은 `127.0.0.1`(로컬 전용). 인증이 없으므로(전체 삭제 API 포함) 외부 공개가 필요할 때만 `--host 0.0.0.0` 사용
 
 ### 테스트

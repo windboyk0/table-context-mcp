@@ -39,7 +39,7 @@ table-context-mcp/
 ## 주요 기능 구현 Flow
 
 ### 1. 웹 파트 (UI & FastAPI)
-- 브라우저를 통해 `http://localhost:8090` 접근
+- 브라우저를 통해 `http://localhost:8500` 접근
 - 드래그 앤 드롭 및 클릭으로 `TableDefinition_Sample.xlsx` 형식 파일 폼 전송
 - 서버는 pandas로 이를 파싱하여 테이블명(`테이블명` 필드 기준)을 추출하고 `tableStore/{테이블명}.json` 파일로 각각 고유하게 저장
 - 저장 완료 후, 현재 시스템에 보관된 테이블 목록(JSON 리스트)을 화면에 표시

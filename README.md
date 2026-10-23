@@ -57,15 +57,15 @@ pip install -r requirements.txt
 
 ```bash
 # 개발 모드 (파일 변경 시 자동 재시작)
-uvicorn web_server:app --host 127.0.0.1 --port 8090 --reload
+uvicorn web_server:app --host 127.0.0.1 --port 8500 --reload
 
 # 운영 모드
-uvicorn web_server:app --host 127.0.0.1 --port 8090
+uvicorn web_server:app --host 127.0.0.1 --port 8500
 ```
 
 > 웹 서버에는 인증이 없습니다(전체 삭제 API 포함). 외부 공개가 꼭 필요할 때만 `--host 0.0.0.0`을 사용하세요.
 
-브라우저에서 `http://localhost:8090` 접속 후 테이블 정의서를 업로드하세요.
+브라우저에서 `http://localhost:8500` 접속 후 테이블 정의서를 업로드하세요.
 
 ### 3. MCP 서버 (직접 실행 시)
 
